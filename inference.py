@@ -179,8 +179,7 @@ def run_model_inferences(split_name: str, run_id: str, dataset: str, features: l
     pile_dataset = PileDataset(pile_sequences, tokenizer)
     batch_size = get_batch_size(split_name)
     data_loader = DataLoader(pile_dataset, batch_size=batch_size)
-    pythia_model.to(device) 
-    
+
     with torch.no_grad():
         desc = f"Collecting {dataset} inference responses for {split_name}"
         for batch in tqdm(data_loader, desc=desc):
@@ -212,22 +211,12 @@ def gini(array):
     if np.amin(array) < 0:
         array -= np.amin(array)  
     array = np.sort(array)  
-    index = np.arange(1,array.shape[0]+1)  
+    index = np.arange(1,array.shape[0]+ 1)  
     n = array.shape[0] 
     return ((np.sum((2 * index - n  - 1) * array)) / (n * np.sum(array)))  
 
 
-def process_attention_head(args):
-    e=1e-8 
-    head_index, head = args
-    attention_head = head.detach().cpu().numpy()
-    attention_head += e 
-    head_entropy = -np.sum(attention_head * np.log(attention_head)) 
-    return head_index, head_entropy
-
-
-def accumilate_inference_log(
-    batch_sequence_ids: list, labels: torch.Tensor, outputs: CausalLMOutputWithPast, features: list):
+def accumilate_inference_log(batch_sequence_ids: list, labels: torch.Tensor, outputs: CausalLMOutputWithPast, features: list):
     """
     Extract the desired data from the model response and save it to a CSV file.
 
@@ -240,8 +229,8 @@ def accumilate_inference_log(
     logits = outputs.logits.detach()
     perplexities = [calculate_perplexity(logits[i], labels[i]) for i in range(len(logits))] if "ppl" in features else None
     inference_logs = []
-    e=1e-8
-    
+    e = 1e-8
+
     for index, id_tensor in enumerate(batch_sequence_ids):
         total_entropy = []
         total_gini = []
@@ -253,18 +242,20 @@ def accumilate_inference_log(
             inference_log["generation_perplexity"] = perplexities[index][1]
             inference_log["sequence_perplexity"] = perplexities[index][2]
         if "attn" in features:
-            for layer_index, attention_layer in enumerate(outputs.attentions):  
+            for layer_index, attention_layer in enumerate(outputs.attentions):
                 sequence_attention = attention_layer[index].detach()
                 head_e = []
                 gini_head = []
 
-                for head_index, head in enumerate(sequence_attention): 
-                    attention_head = head.detach().cpu().numpy() 
-                    attention_head += e 
+                for head_index, head in enumerate(sequence_attention):
+                    attention_head = head.detach().cpu().numpy()
+                    attention_head += (
+                        e  # adding 'e' to attention weights that are 0 to avoid log zero error while calculating entropy. Entropy = - ∑(w * log(w))
+                    )
                     gini_coefficient = gini(attention_head)
                     gini_head.append(gini_coefficient)
-                    #head_entropy = -np.sum(attention_head * np.log(attention_head)) 
-                    #head_e.append(head_entropy)
+                    head_entropy = -np.sum(attention_head * np.log(attention_head))
+                    head_e.append(head_entropy)
                     inference_log[f"gini_head{head_index+1}_layer{layer_index+1}"] = gini_coefficient
                     #inference_log[f"entropy_head{head_index+1}_layer{layer_index+1}"] = head_entropy
 
@@ -279,7 +270,7 @@ def accumilate_inference_log(
                 for head_index, head_entropy in head_results:
                     head_e.append(head_entropy)
                     inference_log[f"entropy_head{head_index+1}_layer{layer_index+1}"] = head_entropy
-                
+
                 avg_head = np.mean(head_e)
                 avg_head_gini = np.mean(gini_head)
                 total_entropy.append(avg_head)
@@ -288,11 +279,12 @@ def accumilate_inference_log(
             average_entropy = np.mean(total_entropy)
             average_gini = np.mean(total_gini)
             inference_log[f"avg entropy"] = average_entropy
-            inference_log[f"avg gini"] = average_gini 
-                
+            inference_log[f"avg gini"] = average_gini
+
         inference_logs.append(inference_log)
        
     return inference_logs
+
 
 def save_inference_log(split_name: str, run_id: str, dataset: pd.DataFrame, inference_logs: list):
     """Saves the accumilated inference log in a pandas dataframe
@@ -306,6 +298,7 @@ def save_inference_log(split_name: str, run_id: str, dataset: pd.DataFrame, infe
     file_name = split_name.replace(".", "_")
     inference_logs_df = pd.DataFrame(inference_logs)
     inference_logs_df.to_csv(f"datasets/{run_id}/{dataset}_{file_name}.csv", index=False, mode="a")
+
 
 def parse_cli_args():
     parser = ArgumentParser()
